@@ -1,0 +1,228 @@
+
+Практична робота №1, частина 2 (додаткові бали).
+Програма виконує арифметичні дії над цілими числами в системах числення з основою 2..16
+(відмінних від десяткової) алгоритмами "у стовпчик" - розряд за розрядом:
+  * додавання - з перенесенням у старший розряд;
+  * віднімання - з позикою зі старшого розряду;
+  * множення - частинні добутки на кожну цифру множника, зсув і додавання;
+  * ділення - послідовне порівняння, віднімання і зсув (з дробовою частиною частки);
+  * віднімання за допомогою додаткового коду (двійкова система).
+Запуск:  python part2_arithmetic.py 1342 + 1271 8    (x  дія  y  основа)
+         python part2_arithmetic.py 1010101001 / 1010111001 2 12
+         python part2_arithmetic.py                 (інтерактивний режим)
+         python part2_arithmetic.py --demo          (приклади варіанту 10)
+         python part2_arithmetic.py --test          (автоматичне тестування)
+Дії: +  -  x (або *)  /  c (віднімання через додатковий код, лише для основи 2)
+"""
+import random
+import sys
+
+DIG = "0123456789ABCDEF"
+SUBS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+sb = lambda b: str(b).translate(SUBS)
+
+
+def val(ch):
+    return DIG.index(ch)
+
+
+def check(x, b):
+    x = x.upper()
+    if not x or any(ch not in DIG[:b] for ch in x):
+        raise ValueError(f"'{x}' не є числом у системі з основою {b}")
+    return x
+
+
+def strip0(s):
+    return s.lstrip("0") or "0"
+
+
+def add(x, y, b, steps=None):
+    """Додавання у стовпчик: розряд за розрядом справа наліво з перенесенням."""
+    x, y = check(x, b), check(y, b)
+    n = max(len(x), len(y))
+    x, y = x.zfill(n), y.zfill(n)
+    carry, res = 0, ""
+    for i in range(n - 1, -1, -1):
+        s = val(x[i]) + val(y[i]) + carry
+        if steps is not None:
+            steps.append(f"розряд {n - 1 - i}: {x[i]} + {y[i]}" + (" + 1" if carry else "")
+                         + f" = {s} -> цифра {DIG[s % b]}, перенесення {s // b}")
+        res, carry = DIG[s % b] + res, s // b
+    return strip0(("1" if carry else "") + res)
+
+
+def sub(x, y, b, steps=None):
+    """Віднімання у стовпчик (x >= y): розряд за розрядом справа наліво з позикою."""
+    x, y = check(x, b), check(y, b)
+    if int(x, b) < int(y, b):
+        raise ValueError("зменшуване менше від від'ємника: використайте дію c (додатковий код)")
+    n = len(x)
+    y = y.zfill(n)
+    borrow, res = 0, ""
+    for i in range(n - 1, -1, -1):
+        d = val(x[i]) - val(y[i]) - borrow
+        note = ""
+        if d < 0:
+            d, borrow, note = d + b, 1, f" (позика {b})"
+        else:
+            borrow = 0
+        if steps is not None:
+            steps.append(f"розряд {n - 1 - i}: {x[i]} - {y[i]}{note} -> цифра {DIG[d]}, позика {borrow}")
+        res = DIG[d] + res
+    return strip0(res)
+
+
+def mul_digit(x, d, b):
+    """Множення числа на одну цифру з перенесенням."""
+    carry, res = 0, ""
+    for ch in reversed(x):
+        p = val(ch) * d + carry
+        res, carry = DIG[p % b] + res, p // b
+    while carry:
+        res, carry = DIG[carry % b] + res, carry // b
+    return strip0(res)
+
+
+def mul(x, y, b, steps=None):
+    """Множення: частинні добутки на цифри множника, зсув ліворуч і додавання."""
+    x, y = check(x, b), check(y, b)
+    total = "0"
+    for k, ch in enumerate(reversed(y)):
+        d = val(ch)
+        if d == 0:
+            continue
+        pp = mul_digit(x, d, b)
+        if steps is not None:
+            steps.append(f"цифра {ch} (зсув {k}): {x} · {ch} = {pp}" + "0" * k)
+        total = add(total, pp + "0" * k, b)
+    return strip0(total)
+
+
+def div(x, y, b, nd=0, steps=None):
+    """Ділення у стовпчик: частка (ціла частина + nd цифр після коми) і остача."""
+    x, y = check(x, b), check(y, b)
+    yi = int(y, b)
+    if yi == 0:
+        raise ZeroDivisionError("ділення на нуль")
+    rem, q = 0, ""
+    for ch in x:                       # ціла частина
+        rem = rem * b + val(ch)
+        d = next(k for k in range(b - 1, -1, -1) if yi * k <= rem)
+        q += DIG[d]
+        if steps is not None:
+            steps.append(f"знесено {ch}: поточне ділене {to_str(rem, b)}, цифра частки {DIG[d]}")
+        rem -= yi * d
+    frac = ""
+    for k in range(nd):                # дробова частина
+        if rem == 0:
+            break
+        rem *= b
+        d = next(j for j in range(b - 1, -1, -1) if yi * j <= rem)
+        frac += DIG[d]
+        if steps is not None:
+            steps.append(f"цифра після коми №{k + 1}: остача·{b} = {to_str(rem, b)}, цифра {DIG[d]}")
+        rem -= yi * d
+    return strip0(q), frac, rem
+
+
+def codes(n, bits):
+    """Прямий, зворотний, додатковий коди числа -n (двійкова система, розрядна сітка bits)."""
+    mag = bin(n)[2:].zfill(bits - 1)
+    inv = "".join("1" if c == "0" else "0" for c in mag)
+    comp = bin(int(inv, 2) + 1)[2:].zfill(bits - 1)
+    return "1." + mag, "1." + inv, "1." + comp
+
+
+def sub_complement(x, y, bits=16, steps=None):
+    """x - y у двійковій системі: x + (додатковий код від'ємного y); перенос зі знака відкидається."""
+    xi, yi = int(check(x, 2), 2), int(check(y, 2), 2)
+    d, inv, comp = codes(yi, bits)
+    s = xi + int(comp.replace(".", ""), 2)
+    if steps is not None:
+        steps += [f"{x} = {xi}, {y} = {yi}, розрядна сітка {bits} біт",
+                  f"-{y}: прямий код {d}", f"-{y}: зворотний код {inv}", f"-{y}: додатковий код {comp}",
+                  f"сума: 0.{xi:0{bits - 1}b} + {comp} = {s:0{bits + 1}b} -> перенос зі знакового розряду відкидаємо"]
+    s &= 2 ** bits - 1
+    sign = "-" if s >> (bits - 1) else ""
+    return sign + strip0(f"{s:0{bits}b}") if not sign else "-" + strip0(f"{(2 ** bits - s):0{bits}b}")
+
+
+def calc(x, op, y, b, nd=12, trace=True):
+    steps = [] if trace else None
+    if op == "+": res = add(x, y, b, steps)
+    elif op == "-": res = sub(x, y, b, steps)
+    elif op in ("x", "*", "X"): res = mul(x, y, b, steps)
+    elif op == "/":
+        q, f, r = div(x, y, b, nd, steps)
+        res = q + ("," + f if f else "") + (f"  (остача {to_str(r, b)})" if r and not f else "")
+    elif op == "c":
+        if b != 2: raise ValueError("додатковий код реалізовано для двійкової системи")
+        res = sub_complement(x, y, 16, steps)
+    else: raise ValueError("невідома дія: " + op)
+    return res, steps
+
+
+def to_str(n, b):
+    s = ""
+    while n:
+        n, r = divmod(n, b)
+        s = DIG[r] + s
+    return s or "0"
+
+
+def run(x, op, y, b, nd=12):
+    res, steps = calc(x, op, y, b, nd)
+    print(f"{x}{sb(b)} {op} {y}{sb(b)}")
+    for s in steps:
+        print("  " + s)
+    print(f"Результат: {res}{sb(b)}\n")
+
+
+def demo():
+    a, bb, c = 738, 681, 697   # числа варіанту 10 (N = 10, g = 251)
+    for x, op, y, b in [(to_str(a, 8), "+", to_str(c, 8), 8), (to_str(bb, 16), "+", to_str(c, 16), 16),
+                        (to_str(a, 2), "x", to_str(bb, 2), 2), (to_str(c, 8), "x", to_str(bb, 8), 8),
+                        (to_str(a, 2), "-", to_str(bb, 2), 2), (to_str(a, 8), "-", to_str(c, 8), 8),
+                        (to_str(bb, 2), "/", to_str(c, 2), 2), (to_str(a, 2), "c", to_str(bb, 2), 2)]:
+        run(x, op, y, b)
+
+
+def test():
+    random.seed(2)
+    for _ in range(4000):
+        b = random.randint(2, 16)
+        p, q = random.randint(0, 10 ** 5), random.randint(1, 10 ** 5)
+        x, y = to_str(p, b), to_str(q, b)
+        assert int(add(x, y, b), b) == p + q
+        if p >= q: assert int(sub(x, y, b), b) == p - q
+        assert int(mul(x, y, b), b) == p * q
+        qs, fr, rem = div(x, y, b, 0)
+        assert int(qs, b) == p // q and rem == p % q
+    for _ in range(2000):              # додатковий код: x - y у 16-бітній сітці
+        p, q = random.randint(0, 30000), random.randint(1, 30000)
+        r = sub_complement(bin(p)[2:], bin(q)[2:], 16)
+        assert (int(r, 2) if not r.startswith("-") else -int(r[1:], 2)) == p - q
+    assert calc("1342", "+", "1271", 8, trace=False)[0] == "2633"
+    assert calc("2A9", "+", "2B9", 16, trace=False)[0] == "562"
+    print("Усі тести пройдено: 4000 випадкових прикладів для основ 2..16 і 2000 для додаткового коду.")
+
+
+def main():
+    a = sys.argv[1:]
+    if a and a[0] == "--demo": return demo()
+    if a and a[0] == "--test": return test()
+    if len(a) >= 4:
+        return run(a[0], a[1], a[2], int(a[3]), int(a[4]) if len(a) > 4 else 12)
+    print("Арифметика в системах числення (основи 2..16). Формат: x дія y основа. Порожній ввід - вихід.")
+    while True:
+        line = input("> ").split()
+        if not line: break
+        try:
+            run(line[0], line[1], line[2], int(line[3]))
+        except (ValueError, ZeroDivisionError, IndexError, StopIteration) as e:
+            print("Помилка:", e)
+
+
+if __name__ == "__main__":
+    main()
