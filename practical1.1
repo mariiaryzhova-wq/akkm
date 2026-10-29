@@ -1,0 +1,169 @@
+
+Практична робота №1, частина 1
+Програма перетворює числа з однієї системи числення в іншу (основи 2..16)
+з покроковим показом алгоритмів:
+  * цілу частину - методом послідовного ділення на нову основу;
+  * дробову частину - методом послідовного множення на нову основу;
+  * перехід у десяткову систему - розкладанням у поліном.
+Запуск:  python part1_converter.py 160 10 2        (число, з якої основи, в яку основу)
+         python part1_converter.py 0,667 10 2 10   (+ кількість цифр після коми)
+         python part1_converter.py                 (інтерактивний режим)
+         python part1_converter.py --demo          (приклади варіанту 10)
+         python part1_converter.py --test          (автоматичне тестування)
+"""
+import random
+import sys
+from fractions import Fraction
+
+DIG = "0123456789ABCDEF"
+SUBS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def sb(base):
+    """Основа системи у вигляді нижнього індексу."""
+    return str(base).translate(SUBS)
+
+
+def show(fr):
+    """Точний десятковий запис дробу (або p/q, якщо запис нескінченний)."""
+    fr = Fraction(fr)
+    den, k = fr.denominator, 0
+    while den % 2 == 0: den //= 2
+    while den % 5 == 0: den //= 5
+    if den != 1:
+        return f"{fr.numerator}/{fr.denominator}"
+    scale = 1
+    while (fr * scale).denominator != 1: scale *= 10
+    n = int(fr * scale)
+    s = str(n).zfill(len(str(scale)))
+    return (s[:-len(str(scale)) + 1] or "0") + "," + s[-len(str(scale)) + 1:] if scale > 1 else str(n)
+
+
+def parse(text, base):
+    """Рядок у системі з основою base -> точне значення (Fraction)."""
+    t = text.strip().upper().replace(",", ".")
+    sign = -1 if t.startswith("-") else 1
+    t = t.lstrip("+-")
+    ip, _, fp = t.partition(".")
+    for ch in ip + fp:
+        if ch not in DIG[:base]:
+            raise ValueError(f"цифра '{ch}' неприпустима в системі з основою {base}")
+    value = Fraction(int(ip, base)) if ip else Fraction(0)
+    for i, ch in enumerate(fp, 1):
+        value += Fraction(DIG.index(ch), base ** i)
+    return sign * value
+
+
+def int_to_base(n, base, trace=None):
+    """Ціла частина: послідовне ділення на основу, залишки читаємо знизу вгору."""
+    if n == 0:
+        return "0"
+    digits = ""
+    while n > 0:
+        q, r = divmod(n, base)
+        if trace is not None:
+            trace.append(f"  {n} : {base} = {q}, залишок {r}" + (f" ({DIG[r]})" if r > 9 else ""))
+        digits = DIG[r] + digits
+        n = q
+    return digits
+
+
+def frac_to_base(f, base, nd, trace=None):
+    """Дробова частина: послідовне множення на основу, цілі частини читаємо зверху вниз."""
+    digits = ""
+    for _ in range(nd):
+        if f == 0:
+            break
+        p = f * base
+        d = int(p)
+        if trace is not None:
+            trace.append(f"  {show(f)} · {base} = {show(p)}, цифра {DIG[d]}")
+        digits += DIG[d]
+        f = p - d
+    return digits
+
+
+def polynomial(text, base):
+    """Розклад числа в поліном за степенями основи (для переходу в десяткову систему)."""
+    t = text.strip().upper().replace(",", ".")
+    ip, _, fp = t.partition(".")
+    terms = [f"{DIG.index(ch)}·{base}^{len(ip) - 1 - i}" for i, ch in enumerate(ip)]
+    terms += [f"{DIG.index(ch)}·{base}^-{i}" for i, ch in enumerate(fp, 1)]
+    return " + ".join(terms)
+
+
+def convert(text, src, dst, nd=8, trace=None):
+    """Повне перетворення text із системи src у систему dst."""
+    value = parse(text, src)
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    ip = int(value)
+    fp = value - ip
+    if trace is not None and src != 10:
+        trace.append(f"Розклад у поліном: {polynomial(text.lstrip('+-'), src)} = {show(value)}{sb(10)}")
+    if dst == 10:
+        res = show(value)
+    else:
+        if trace is not None and ip > 0:
+            trace.append("Ціла частина (ділення):")
+        res = int_to_base(ip, dst, trace)
+        if fp:
+            if trace is not None:
+                trace.append("Дробова частина (множення):")
+            fd = frac_to_base(fp, dst, nd, trace)
+            res += "," + fd
+    return sign + res
+
+
+def run(text, src, dst, nd=8):
+    trace = []
+    res = convert(text, src, dst, nd, trace)
+    print(f"{text}{sb(src)} -> ?{sb(dst)}")
+    print("\n".join(trace))
+    print(f"Результат: {text}{sb(src)} = {res}{sb(dst)}\n")
+
+
+def demo():
+    cases = [("160", 10, 2), ("160", 10, 16), ("160", 10, 8), ("10010110", 2, 10), ("D4C", 16, 2),
+             ("3457", 8, 10), ("11011,01", 2, 10), ("0,667", 10, 2, 10), ("0,4678", 10, 8, 5),
+             ("0,6967", 10, 16, 4)]
+    for c in cases:
+        run(*c)
+
+
+def test():
+    random.seed(1)
+    for _ in range(3000):
+        n, src, dst = random.randint(0, 10 ** 6), random.randint(2, 16), random.randint(2, 16)
+        s = convert(str(n), 10, src)
+        assert parse(s, src) == n, (n, src)
+        assert parse(convert(s, src, dst), dst) == n, (n, src, dst)
+    for _ in range(3000):  # дроби, що точно записуються у двійковій системі
+        k = random.randint(1, 12)
+        fr = Fraction(random.randint(1, 2 ** k - 1), 2 ** k)
+        b2 = convert(show(fr), 10, 2, 40)
+        assert parse(b2, 2) == fr
+        assert parse(convert(b2, 2, 16, 40), 16) == fr
+        assert parse(convert(b2, 2, 8, 40), 8) == fr
+    assert convert("160", 10, 2) == "10100000" and convert("D4C", 16, 8) == "6514"
+    print("Усі тести пройдено: 3000 цілих чисел і 3000 дробових чисел.")
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--demo": return demo()
+    if args and args[0] == "--test": return test()
+    if len(args) >= 3:
+        return run(args[0], int(args[1]), int(args[2]), int(args[3]) if len(args) > 3 else 8)
+    print("Конвертер систем числення (основи 2..16). Порожній ввід - вихід.")
+    while True:
+        text = input("Число: ").strip()
+        if not text: break
+        try:
+            run(text, int(input("З основи: ")), int(input("В основу: ")), int(input("Цифр після коми [8]: ") or 8))
+        except ValueError as e:
+            print("Помилка:", e)
+
+
+if __name__ == "__main__":
+    main()
