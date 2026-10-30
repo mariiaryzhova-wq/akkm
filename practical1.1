@@ -1,168 +1,205 @@
-
-Практична робота №1, частина 1
-Програма перетворює числа з однієї системи числення в іншу (основи 2..16)
-з покроковим показом алгоритмів:
-  * цілу частину - методом послідовного ділення на нову основу;
-  * дробову частину - методом послідовного множення на нову основу;
-  * перехід у десяткову систему - розкладанням у поліном.
-Запуск:  python part1_converter.py 160 10 2        (число, з якої основи, в яку основу)
-         python part1_converter.py 0,667 10 2 10   (+ кількість цифр після коми)
-         python part1_converter.py                 (інтерактивний режим)
-         python part1_converter.py --demo          (приклади варіанту 10)
-         python part1_converter.py --test          (автоматичне тестування)
+# -*- coding: utf-8 -*-
 """
+Практична робота №1, частина 1 (додаткові бали).
+Конвертер чисел між системами числення з основами 2..16.
+
+Алгоритми:
+  * ціла частина  -> послідовне ділення на нову основу (залишки читаємо знизу вгору);
+  * дробова частина -> послідовне множення на нову основу (цілі частини читаємо зверху вниз);
+  * з будь-якої системи в десяткову -> схема Горнера.
+
+Приклади запуску:
+  python part1_converter.py 160 10 2
+  python part1_converter.py 0,667 10 2 --digits 10
+  python part1_converter.py            (інтерактивний режим)
+  python part1_converter.py --demo     (приклади варіанту 10)
+  python part1_converter.py --test     (самоперевірка)
+"""
+import argparse
 import random
 import sys
+from collections import deque
+from decimal import Decimal, getcontext
 from fractions import Fraction
 
-DIG = "0123456789ABCDEF"
-SUBS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+getcontext().prec = 60
+ALPHABET = "0123456789ABCDEF"
 
 
-def sb(base):
-    """Основа системи у вигляді нижнього індексу."""
-    return str(base).translate(SUBS)
+def use_utf8():
+    """Щоб українські літери коректно виводилися і в консолі Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
-def show(fr):
-    """Точний десятковий запис дробу (або p/q, якщо запис нескінченний)."""
-    fr = Fraction(fr)
-    den, k = fr.denominator, 0
-    while den % 2 == 0: den //= 2
-    while den % 5 == 0: den //= 5
-    if den != 1:
-        return f"{fr.numerator}/{fr.denominator}"
-    scale = 1
-    while (fr * scale).denominator != 1: scale *= 10
-    n = int(fr * scale)
-    s = str(n).zfill(len(str(scale)))
-    return (s[:-len(str(scale)) + 1] or "0") + "," + s[-len(str(scale)) + 1:] if scale > 1 else str(n)
+def fmt(value):
+    """Точний десятковий запис дробу з комою; якщо запис нескінченний - вигляд p/q."""
+    value = Fraction(value)
+    d = value.denominator
+    for p in (2, 5):
+        while d % p == 0:
+            d //= p
+    if d != 1:
+        return f"{value.numerator}/{value.denominator}"
+    text = format((Decimal(value.numerator) / Decimal(value.denominator)).normalize(), "f")
+    return text.replace(".", ",")
 
 
-def parse(text, base):
-    """Рядок у системі з основою base -> точне значення (Fraction)."""
+def split_number(text):
+    """Розбиває запис на знак, цілу та дробову частини."""
     t = text.strip().upper().replace(",", ".")
-    sign = -1 if t.startswith("-") else 1
+    sign = "-" if t.startswith("-") else ""
     t = t.lstrip("+-")
-    ip, _, fp = t.partition(".")
-    for ch in ip + fp:
-        if ch not in DIG[:base]:
+    whole, _, frac = t.partition(".")
+    if not (whole or frac):
+        raise ValueError("порожній запис числа")
+    return sign, whole or "0", frac
+
+
+def check_digits(part, base):
+    for ch in part:
+        if ch not in ALPHABET[:base]:
             raise ValueError(f"цифра '{ch}' неприпустима в системі з основою {base}")
-    value = Fraction(int(ip, base)) if ip else Fraction(0)
-    for i, ch in enumerate(fp, 1):
-        value += Fraction(DIG.index(ch), base ** i)
-    return sign * value
 
 
-def int_to_base(n, base, trace=None):
-    """Ціла частина: послідовне ділення на основу, залишки читаємо знизу вгору."""
-    if n == 0:
-        return "0"
-    digits = ""
-    while n > 0:
-        q, r = divmod(n, base)
-        if trace is not None:
-            trace.append(f"  {n} : {base} = {q}, залишок {r}" + (f" ({DIG[r]})" if r > 9 else ""))
-        digits = DIG[r] + digits
-        n = q
-    return digits
+def horner_value(whole, frac, base, log=None):
+    """Значення числа за схемою Горнера: ((a*b + c)*b + d) ... ; дріб - з кінця."""
+    value = 0
+    for ch in whole:
+        digit = ALPHABET.index(ch)
+        if log is not None:
+            log.append(f"  {value} * {base} + {digit} = {value * base + digit}")
+        value = value * base + digit
+    tail = Fraction(0)
+    for ch in reversed(frac):
+        digit = ALPHABET.index(ch)
+        new = (tail + digit) / base
+        if log is not None:
+            log.append(f"  ({fmt(tail)} + {digit}) / {base} = {fmt(new)}")
+        tail = new
+    return Fraction(value) + tail
 
 
-def frac_to_base(f, base, nd, trace=None):
-    """Дробова частина: послідовне множення на основу, цілі частини читаємо зверху вниз."""
-    digits = ""
-    for _ in range(nd):
+def whole_to_base(n, base, log=None):
+    """Ціла частина: ділимо на основу, поки частка не стане нулем."""
+    out = deque()
+    while True:
+        n, r = divmod(n, base)
+        if log is not None:
+            log.append(f"  {n * base + r} : {base} = {n}, залишок {r}" + (f" ({ALPHABET[r]})" if r > 9 else ""))
+        out.appendleft(ALPHABET[r])
+        if n == 0:
+            return "".join(out)
+
+
+def frac_to_base(f, base, count, log=None):
+    """Дробова частина: множимо на основу, беремо цілу частину як цифру."""
+    out = []
+    for _ in range(count):
         if f == 0:
             break
-        p = f * base
-        d = int(p)
-        if trace is not None:
-            trace.append(f"  {show(f)} · {base} = {show(p)}, цифра {DIG[d]}")
-        digits += DIG[d]
-        f = p - d
-    return digits
+        product = f * base
+        digit = int(product)
+        if log is not None:
+            log.append(f"  {fmt(f)} * {base} = {fmt(product)}, цифра {ALPHABET[digit]}")
+        out.append(ALPHABET[digit])
+        f = product - digit
+    return "".join(out)
 
 
-def polynomial(text, base):
-    """Розклад числа в поліном за степенями основи (для переходу в десяткову систему)."""
-    t = text.strip().upper().replace(",", ".")
-    ip, _, fp = t.partition(".")
-    terms = [f"{DIG.index(ch)}·{base}^{len(ip) - 1 - i}" for i, ch in enumerate(ip)]
-    terms += [f"{DIG.index(ch)}·{base}^-{i}" for i, ch in enumerate(fp, 1)]
-    return " + ".join(terms)
-
-
-def convert(text, src, dst, nd=8, trace=None):
-    """Повне перетворення text із системи src у систему dst."""
-    value = parse(text, src)
-    sign = "-" if value < 0 else ""
-    value = abs(value)
-    ip = int(value)
-    fp = value - ip
-    if trace is not None and src != 10:
-        trace.append(f"Розклад у поліном: {polynomial(text.lstrip('+-'), src)} = {show(value)}{sb(10)}")
+def convert_number(text, src, dst, digits=8, log=None):
+    """Перетворення запису text із системи src у систему dst; повертає рядок."""
+    for b in (src, dst):
+        if not 2 <= b <= 16:
+            raise ValueError("основа має бути від 2 до 16")
+    sign, whole, frac = split_number(text)
+    check_digits(whole + frac, src)
+    if src == 10 and log is not None:
+        pass
+    if src != 10 and log is not None:
+        log.append("Схема Горнера (перехід у десяткову систему):")
+    value = horner_value(whole, frac, src, log if src != 10 else None)
     if dst == 10:
-        res = show(value)
-    else:
-        if trace is not None and ip > 0:
-            trace.append("Ціла частина (ділення):")
-        res = int_to_base(ip, dst, trace)
-        if fp:
-            if trace is not None:
-                trace.append("Дробова частина (множення):")
-            fd = frac_to_base(fp, dst, nd, trace)
-            res += "," + fd
-    return sign + res
+        return sign + fmt(value)
+    int_part, frac_part = int(value), value - int(value)
+    if log is not None and (int_part > 0 or not frac_part):
+        log.append("Ціла частина (ділення):")
+    result = whole_to_base(int_part, dst, log if (int_part > 0 or not frac_part) else None)
+    if frac_part:
+        if log is not None:
+            log.append("Дробова частина (множення):")
+        result += "," + frac_to_base(frac_part, dst, digits, log)
+    return sign + result
 
 
-def run(text, src, dst, nd=8):
-    trace = []
-    res = convert(text, src, dst, nd, trace)
-    print(f"{text}{sb(src)} -> ?{sb(dst)}")
-    print("\n".join(trace))
-    print(f"Результат: {text}{sb(src)} = {res}{sb(dst)}\n")
+def show(text, src, dst, digits=8):
+    log = []
+    result = convert_number(text, src, dst, digits, log)
+    print(f"Перетворення {text} ({src}) -> система {dst}")
+    print("\n".join(log))
+    print(f"Результат: {text}({src}) = {result}({dst})\n")
 
 
-def demo():
-    cases = [("160", 10, 2), ("160", 10, 16), ("160", 10, 8), ("10010110", 2, 10), ("D4C", 16, 2),
-             ("3457", 8, 10), ("11011,01", 2, 10), ("0,667", 10, 2, 10), ("0,4678", 10, 8, 5),
-             ("0,6967", 10, 16, 4)]
-    for c in cases:
-        run(*c)
+DEMO = [("160", 10, 2, 8), ("160", 10, 16, 8), ("160", 10, 8, 8), ("10010110", 2, 10, 8),
+        ("10010110", 2, 16, 8), ("D4C", 16, 2, 8), ("D4C", 16, 10, 8), ("3457", 8, 10, 8),
+        ("11011,01", 2, 10, 8), ("0,667", 10, 2, 10), ("0,4678", 10, 8, 5), ("0,6967", 10, 16, 4)]
 
 
-def test():
-    random.seed(1)
+def self_test():
+    rnd = random.Random(7)
     for _ in range(3000):
-        n, src, dst = random.randint(0, 10 ** 6), random.randint(2, 16), random.randint(2, 16)
-        s = convert(str(n), 10, src)
-        assert parse(s, src) == n, (n, src)
-        assert parse(convert(s, src, dst), dst) == n, (n, src, dst)
-    for _ in range(3000):  # дроби, що точно записуються у двійковій системі
-        k = random.randint(1, 12)
-        fr = Fraction(random.randint(1, 2 ** k - 1), 2 ** k)
-        b2 = convert(show(fr), 10, 2, 40)
-        assert parse(b2, 2) == fr
-        assert parse(convert(b2, 2, 16, 40), 16) == fr
-        assert parse(convert(b2, 2, 8, 40), 8) == fr
-    assert convert("160", 10, 2) == "10100000" and convert("D4C", 16, 8) == "6514"
-    print("Усі тести пройдено: 3000 цілих чисел і 3000 дробових чисел.")
+        n, a, b = rnd.randint(0, 10 ** 6), rnd.randint(2, 16), rnd.randint(2, 16)
+        s = convert_number(str(n), 10, a)
+        assert convert_number(s, a, 10) == str(n)
+        assert convert_number(convert_number(s, a, b), b, 10) == str(n)
+    for _ in range(3000):
+        k = rnd.randint(1, 12)
+        exact = Fraction(rnd.randint(1, 2 ** k - 1), 2 ** k)
+        bin_text = convert_number(fmt(exact), 10, 2, 40)
+        assert Fraction(convert_number(bin_text, 2, 10, 40).replace(",", ".")) == exact
+        for base in (8, 16):
+            other = convert_number(bin_text, 2, base, 40)
+            assert convert_number(other, base, 2, 40) == bin_text
+    assert convert_number("160", 10, 2) == "10100000"
+    assert convert_number("D4C", 16, 8) == "6514"
+    print("Усі тести пройдено: 3000 цілих і 3000 дробових чисел.")
 
 
 def main():
-    args = sys.argv[1:]
-    if args and args[0] == "--demo": return demo()
-    if args and args[0] == "--test": return test()
-    if len(args) >= 3:
-        return run(args[0], int(args[1]), int(args[2]), int(args[3]) if len(args) > 3 else 8)
-    print("Конвертер систем числення (основи 2..16). Порожній ввід - вихід.")
-    while True:
-        text = input("Число: ").strip()
-        if not text: break
-        try:
-            run(text, int(input("З основи: ")), int(input("В основу: ")), int(input("Цифр після коми [8]: ") or 8))
-        except ValueError as e:
-            print("Помилка:", e)
+    use_utf8()
+    ap = argparse.ArgumentParser(description="Конвертер систем числення (основи 2..16)")
+    ap.add_argument("number", nargs="?", help="число, наприклад 160 або 0,667")
+    ap.add_argument("src", nargs="?", type=int, help="основа вихідної системи")
+    ap.add_argument("dst", nargs="?", type=int, help="основа нової системи")
+    ap.add_argument("--digits", type=int, default=8, help="цифр після коми (за замовчуванням 8)")
+    ap.add_argument("--demo", action="store_true", help="приклади варіанту 10")
+    ap.add_argument("--test", action="store_true", help="самоперевірка")
+    args = ap.parse_args()
+    try:
+        if args.demo:
+            for case in DEMO:
+                show(*case)
+        elif args.test:
+            self_test()
+        elif args.number is not None and args.src and args.dst:
+            show(args.number, args.src, args.dst, args.digits)
+        else:
+            print("Інтерактивний режим. Порожній рядок - вихід.")
+            while True:
+                text = input("Число: ").strip()
+                if not text:
+                    break
+                try:
+                    show(text, int(input("З основи: ")), int(input("В основу: ")),
+                         int(input("Цифр після коми [8]: ") or 8))
+                except ValueError as err:
+                    print("Помилка:", err)
+    except ValueError as err:
+        print("Помилка:", err)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
